@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 
-class RecipeSuggestionScreen extends StatelessWidget {
+class Page2RecipeScreen extends StatelessWidget {
   final List<String> ingredients;
 
-  const RecipeSuggestionScreen({
+  const Page2RecipeScreen({
     super.key,
     required this.ingredients,
   });
 
-  // Comprehensive master recipe database
+  // Master recipe database
   static const List<Map<String, dynamic>> _masterRecipes = [
     {
       'id': 'rec_1',
@@ -213,12 +213,10 @@ class RecipeSuggestionScreen extends StatelessWidget {
       final requiredList = List<String>.from(recipe['requiredIngredients']);
       final optionalList = List<String>.from(recipe['optionalIngredients']);
 
-      // Rule 1: STRICT FILTER - ALL required ingredients for this recipe MUST be present in userSet!
-      // If a recipe requires 'บล็อกโคลี่' and user removed 'บล็อกโคลี่', requiredSatisfied is FALSE!
+      // STRICT FILTER - ALL required ingredients MUST be present in userSet!
       final bool requiredSatisfied = requiredList.every((req) => userSet.contains(req));
 
       if (requiredSatisfied) {
-        // Calculate matched items
         final matchedItems = <String>[];
         final missingItems = <String>[];
 
@@ -259,7 +257,7 @@ class RecipeSuggestionScreen extends StatelessWidget {
       backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
         title: const Text(
-          'ช่วยคิดเมนู (หน้าที่ 2)',
+          'ช่วยคิดเมนู (Page 2)',
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
         backgroundColor: Colors.white,

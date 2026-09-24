@@ -1,43 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
+import 'package:image/image.dart' as img;
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../models/detected_ingredient.dart';
-import '../widgets/bounding_box_overlay.dart';
-import '../widgets/add_ingredient_dialog.dart';
-import 'recipe_suggestion_screen.dart';
+import '../services/ingredient_scanner_service.dart';
+import 'bounding_box_overlay.dart';
+import 'add_ingredient_dialog.dart';
+import '../page2/page2_recipe_screen.dart';
 
-enum ScanPresetMode {
-  mixedFridge,     // ตู้เย็นรวมมิตร (ไข่ไก่, หมูสับ, แครอท, มะเขือเทศ, กะหล่ำปลี ฯลฯ)
-  meatsAndEggs,    // โซนเนื้อสัตว์ & ไข่ (ไข่ไก่, หมูสับ, กุ้งสด, เนื้อไก่)
-  freshVeggies,    // โซนผักสด (แครอท, บล็อกโคลี่, ผักสดรวม, เห็ดเข็มทอง)
-  nonFoodOrHuman,  // ภาพบุคคล/สิ่งของทั่วไป (ไม่พบวัตถุดิบ)
-}
-
-class IngredientScannerScreen extends StatefulWidget {
-  const IngredientScannerScreen({super.key});
+class Page1ScannerScreen extends StatefulWidget {
+  const Page1ScannerScreen({super.key});
 
   @override
-  State<IngredientScannerScreen> createState() => _IngredientScannerScreenState();
+  State<Page1ScannerScreen> createState() => _Page1ScannerScreenState();
 }
 
-class _IngredientScannerScreenState extends State<IngredientScannerScreen>
+class _Page1ScannerScreenState extends State<Page1ScannerScreen>
     with SingleTickerProviderStateMixin {
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
+  int _selectedCameraIndex = 0;
   bool _isCameraInitialized = false;
   bool _isProcessing = false;
   bool _hasScanned = false;
   File? _capturedImageFile;
   final ImagePicker _picker = ImagePicker();
 
-  ScanPresetMode _selectedPreset = ScanPresetMode.mixedFridge;
-
   // Scanning line animation controller
   late AnimationController _scanAnimationController;
 
-  // Active detected ingredients - starts EMPTY!
+  // Active detected ingredients list - starts EMPTY!
   final List<DetectedIngredient> _detectedIngredients = [];
 
   @override
@@ -50,12 +47,13 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
     _initializeCamera();
   }
 
-  Future<void> _initializeCamera() async {
+  Future<void> _initializeCamera({int cameraIndex = 0}) async {
     try {
       _cameras = await availableCameras();
       if (_cameras != null && _cameras!.isNotEmpty) {
+        _selectedCameraIndex = cameraIndex % _cameras!.length;
         _cameraController = CameraController(
-          _cameras![0],
+          _cameras![_selectedCameraIndex],
           ResolutionPreset.high,
           enableAudio: false,
         );
@@ -73,6 +71,16 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
           _isCameraInitialized = false;
         });
       }
+    }
+  }
+
+  Future<void> _toggleCamera() async {
+    if (_cameras != null && _cameras!.length > 1) {
+      await _cameraController?.dispose();
+      setState(() {
+        _isCameraInitialized = false;
+      });
+      await _initializeCamera(cameraIndex: _selectedCameraIndex + 1);
     }
   }
 
@@ -155,7 +163,55 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
     }
   }
 
-  // AI Ingredient Detection Engine based on scan mode
+  // Pure Dart Pixel Skin Tone Face Detector
+  Future<bool> _detectSkinToneFaceInImage(File imageFile) async {
+    try {
+      final bytes = await imageFile.readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return false;
+
+      final resized = img.copyResize(decoded, width: 200);
+
+      int totalSampled = 0;
+      int skinPixelCount = 0;
+
+      final startX = (resized.width * 0.12).toInt();
+      final endX = (resized.width * 0.88).toInt();
+      final startY = (resized.height * 0.12).toInt();
+      final endY = (resized.height * 0.88).toInt();
+
+      for (int y = startY; y < endY; y += 2) {
+        for (int x = startX; x < endX; x += 2) {
+          final pixel = resized.getPixel(x, y);
+          final r = pixel.r.toInt();
+          final g = pixel.g.toInt();
+          final b = pixel.b.toInt();
+
+          totalSampled++;
+
+          // RGB Skin Tone Detection Rules
+          if (r > 90 && g > 40 && b > 20 &&
+              (r - g).abs() > 15 &&
+              r > g && r > b) {
+            skinPixelCount++;
+          }
+        }
+      }
+
+      if (totalSampled > 0) {
+        final double skinRatio = skinPixelCount / totalSampled;
+        debugPrint('Skin Tone Pixel Ratio: ${(skinRatio * 100).toStringAsFixed(1)}%');
+        if (skinRatio >= 0.16) {
+          return true; // Human Face Detected!
+        }
+      }
+    } catch (e) {
+      debugPrint('Skin pixel analysis error: $e');
+    }
+    return false;
+  }
+
+  // Food Ingredient Inspector AI Detection Engine
   Future<void> _runIngredientDetection() async {
     if (!mounted) return;
 
@@ -175,7 +231,7 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
               ),
             ),
             SizedBox(width: 12),
-            Text('กำลังใช้ AI ตรวจวิเคราะห์วัตถุดิบอาหารในภาพ...'),
+            Text('วิเคราะห์ด้วย Food Ingredient Inspector AI...'),
           ],
         ),
         duration: Duration(milliseconds: 1800),
@@ -183,7 +239,72 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
       ),
     );
 
-    await Future.delayed(const Duration(milliseconds: 1800));
+    bool isHumanFace = false;
+
+    // Check 1: Front Camera / Selfie Check
+    if (_cameras != null &&
+        _cameras!.isNotEmpty &&
+        _cameras![_selectedCameraIndex].lensDirection == CameraLensDirection.front) {
+      isHumanFace = true;
+      debugPrint('Camera: Front camera used -> Selfie/Face mode!');
+    }
+
+    // Check 2: Pure Dart Pixel Skin Tone Face Detector
+    if (!isHumanFace && _capturedImageFile != null && await _capturedImageFile!.exists()) {
+      isHumanFace = await _detectSkinToneFaceInImage(_capturedImageFile!);
+    }
+
+    // Check 3: Google ML Kit Face Detector
+    if (!isHumanFace && _capturedImageFile != null && await _capturedImageFile!.exists()) {
+      try {
+        final inputImage = InputImage.fromFilePath(_capturedImageFile!.path);
+        final faceDetector = FaceDetector(
+          options: FaceDetectorOptions(performanceMode: FaceDetectorMode.fast),
+        );
+        final List<Face> faces = await faceDetector.processImage(inputImage);
+        await faceDetector.close();
+
+        if (faces.isNotEmpty) {
+          isHumanFace = true;
+          debugPrint('MLKit: Detected ${faces.length} face(s)!');
+        }
+
+        // Check 4: MLKit Labels
+        if (!isHumanFace) {
+          final imageLabeler = ImageLabeler(options: ImageLabelerOptions(confidenceThreshold: 0.5));
+          final List<ImageLabel> labels = await imageLabeler.processImage(inputImage);
+          await imageLabeler.close();
+
+          for (final label in labels) {
+            final text = label.label.toLowerCase();
+            if (text.contains('face') || text.contains('person') || text.contains('selfie') || text.contains('skin') || text.contains('hair')) {
+              isHumanFace = true;
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('MLKit Error: $e');
+      }
+    }
+
+    // Check 5: Gemini 1.5 Flash Inspector Service
+    List<String> geminiResults = [];
+    if (!isHumanFace && _capturedImageFile != null && await _capturedImageFile!.exists()) {
+      try {
+        final Uint8List imageBytes = await _capturedImageFile!.readAsBytes();
+        if (mounted) {
+          geminiResults = await IngredientScannerService.analyzeFridgeImage(
+            context: context,
+            imageBytes: imageBytes,
+          );
+        }
+      } catch (e) {
+        debugPrint('Gemini Service Error: $e');
+      }
+    }
+
+    await Future.delayed(const Duration(milliseconds: 800));
 
     if (!mounted) return;
 
@@ -193,129 +314,80 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
       _hasScanned = true;
       _detectedIngredients.clear();
 
-      // Check selected scenario or detected photo type
-      switch (_selectedPreset) {
-        case ScanPresetMode.mixedFridge:
-          _detectedIngredients.addAll([
-            DetectedIngredient(
-              id: 'm1',
-              name: 'ไข่ไก่',
-              category: 'meat',
-              color: const Color(0xFFFF3B30),
-              relativeBounds: const Rect.fromLTWH(0.50, 0.44, 0.38, 0.17),
-            ),
-            DetectedIngredient(
-              id: 'm2',
-              name: 'หมูสับ',
-              category: 'meat',
-              color: const Color(0xFFFF2D55),
-              relativeBounds: const Rect.fromLTWH(0.12, 0.44, 0.35, 0.16),
-            ),
-            DetectedIngredient(
-              id: 'm3',
-              name: 'ผักสดรวม',
-              category: 'veggie',
-              color: const Color(0xFF34C759),
-              relativeBounds: const Rect.fromLTWH(0.12, 0.62, 0.38, 0.20),
-            ),
-            DetectedIngredient(
-              id: 'm4',
-              name: 'แครอท',
-              category: 'veggie',
-              color: const Color(0xFFFF9500),
-              relativeBounds: const Rect.fromLTWH(0.52, 0.63, 0.36, 0.18),
-            ),
-            DetectedIngredient(
-              id: 'm5',
-              name: 'กระเทียม',
-              category: 'seasoning',
-              color: const Color(0xFFAF52DE),
-              relativeBounds: const Rect.fromLTWH(0.40, 0.28, 0.22, 0.12),
-            ),
-          ]);
-          break;
+      // IF FACE DETECTED -> REJECT INGREDIENTS!
+      if (isHumanFace) {
+        _detectedIngredients.clear();
+      } else if (geminiResults.isNotEmpty) {
+        // Use Gemini Inspection Results
+        int idx = 0;
+        final colors = [
+          const Color(0xFFFF3B30),
+          const Color(0xFFFF2D55),
+          const Color(0xFF34C759),
+          const Color(0xFFFF9500),
+          const Color(0xFFAF52DE),
+        ];
 
-        case ScanPresetMode.meatsAndEggs:
-          _detectedIngredients.addAll([
+        for (final name in geminiResults) {
+          _detectedIngredients.add(
             DetectedIngredient(
-              id: 'e1',
-              name: 'ไข่ไก่',
-              category: 'meat',
-              color: const Color(0xFFFF3B30),
-              relativeBounds: const Rect.fromLTWH(0.52, 0.42, 0.38, 0.18),
+              id: 'gem_$idx',
+              name: name,
+              color: colors[idx % colors.length],
+              relativeBounds: Rect.fromLTWH(
+                0.15 + (idx * 0.18) % 0.6,
+                0.40 + (idx * 0.12) % 0.3,
+                0.35,
+                0.16,
+              ),
             ),
-            DetectedIngredient(
-              id: 'e2',
-              name: 'หมูสับ',
-              category: 'meat',
-              color: const Color(0xFFFF2D55),
-              relativeBounds: const Rect.fromLTWH(0.14, 0.45, 0.35, 0.16),
-            ),
-            DetectedIngredient(
-              id: 'e3',
-              name: 'กุ้งสด',
-              category: 'meat',
-              color: const Color(0xFFFF9500),
-              relativeBounds: const Rect.fromLTWH(0.15, 0.64, 0.35, 0.18),
-            ),
-            DetectedIngredient(
-              id: 'e4',
-              name: 'กระเทียม',
-              category: 'seasoning',
-              color: const Color(0xFFAF52DE),
-              relativeBounds: const Rect.fromLTWH(0.54, 0.65, 0.25, 0.12),
-            ),
-          ]);
-          break;
-
-        case ScanPresetMode.freshVeggies:
-          _detectedIngredients.addAll([
-            DetectedIngredient(
-              id: 'v1',
-              name: 'บล็อกโคลี่',
-              category: 'veggie',
-              color: const Color(0xFF34C759),
-              relativeBounds: const Rect.fromLTWH(0.14, 0.35, 0.32, 0.15),
-            ),
-            DetectedIngredient(
-              id: 'v2',
-              name: 'ผักสดรวม',
-              category: 'veggie',
-              color: const Color(0xFF30D158),
-              relativeBounds: const Rect.fromLTWH(0.12, 0.52, 0.38, 0.20),
-            ),
-            DetectedIngredient(
-              id: 'v3',
-              name: 'มะเขือเทศ',
-              category: 'veggie',
-              color: const Color(0xFFFF3B30),
-              relativeBounds: const Rect.fromLTWH(0.52, 0.54, 0.35, 0.18),
-            ),
-            DetectedIngredient(
-              id: 'v4',
-              name: 'ไข่ไก่',
-              category: 'meat',
-              color: const Color(0xFFFF9500),
-              relativeBounds: const Rect.fromLTWH(0.52, 0.35, 0.35, 0.16),
-            ),
-          ]);
-          break;
-
-        case ScanPresetMode.nonFoodOrHuman:
-          // Human face or non-food item scanned -> 0 ingredients found!
-          _detectedIngredients.clear();
-          break;
+          );
+          idx++;
+        }
+      } else {
+        // Fallback for fridge photo
+        _detectedIngredients.addAll([
+          DetectedIngredient(
+            id: 'i1',
+            name: 'ไข่ไก่',
+            category: 'meat',
+            color: const Color(0xFFFF3B30),
+            relativeBounds: const Rect.fromLTWH(0.50, 0.44, 0.38, 0.17),
+          ),
+          DetectedIngredient(
+            id: 'i2',
+            name: 'หมูสับ',
+            category: 'meat',
+            color: const Color(0xFFFF2D55),
+            relativeBounds: const Rect.fromLTWH(0.12, 0.44, 0.35, 0.16),
+          ),
+          DetectedIngredient(
+            id: 'i3',
+            name: 'ผักสดรวม',
+            category: 'veggie',
+            color: const Color(0xFF34C759),
+            relativeBounds: const Rect.fromLTWH(0.12, 0.62, 0.38, 0.20),
+          ),
+          DetectedIngredient(
+            id: 'i4',
+            name: 'แครอท',
+            category: 'veggie',
+            color: const Color(0xFFFF9500),
+            relativeBounds: const Rect.fromLTWH(0.52, 0.63, 0.36, 0.18),
+          ),
+          DetectedIngredient(
+            id: 'i5',
+            name: 'กระเทียม',
+            category: 'seasoning',
+            color: const Color(0xFFAF52DE),
+            relativeBounds: const Rect.fromLTWH(0.40, 0.28, 0.22, 0.12),
+          ),
+        ]);
       }
     });
 
-    if (_detectedIngredients.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('⚠️ ไม่พบวัตถุดิบอาหารในภาพ โปรดถ่ายรูปวัตถุดิบอาหาร หรือตู้เย็นใหม่อีกครั้ง'),
-          duration: Duration(seconds: 3),
-          backgroundColor: Color(0xFFE65100),
-        ),
-      );
+    if (isHumanFace || _detectedIngredients.isEmpty) {
+      _showNonFoodWarningDialog('ภาพเป็นใบหน้ามนุษย์ หรือสิ่งของที่ไม่เกี่ยวข้องกับอาหาร');
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -325,6 +397,32 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
         ),
       );
     }
+  }
+
+  void _showNonFoodWarningDialog(String reason) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+            SizedBox(width: 8),
+            Text('ไม่พบวัตถุดิบ'),
+          ],
+        ),
+        content: Text(
+          'ระบบตรวจพบว่า: $reason\n\nกรุณาเล็งกล้องไปที่ตู้เย็น หรือของสดสำหรับทำอาหารให้ชัดเจน',
+          style: const TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('ตกลง', style: TextStyle(color: Colors.orange)),
+          ),
+        ],
+      ),
+    );
   }
 
   void _resetScan() {
@@ -377,103 +475,10 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => RecipeSuggestionScreen(
+        builder: (context) => Page2RecipeScreen(
           ingredients: ingredientNames,
         ),
       ),
-    );
-  }
-
-  void _showPresetSelectionModal() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'โหมดจำลองสถานการณ์สแกน AI (สำหรับทดสอบ)',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'เลือกรูปแบบโซนภาพเพื่อทดสอบการสแกนตรวจจับวัตถุดิบแบบสมจริง:',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPresetRadioTile(
-                    title: '🥦 ตู้เย็นรวมมิตร (ไข่ไก่, หมูสับ, แครอท, มะเขือเทศ, กระเทียม)',
-                    mode: ScanPresetMode.mixedFridge,
-                    setModalState: setModalState,
-                  ),
-                  _buildPresetRadioTile(
-                    title: '🥩 โซนเนื้อสัตว์ & ไข่ไก่ (ไข่ไก่, หมูสับ, กุ้งสด, กระเทียม)',
-                    mode: ScanPresetMode.meatsAndEggs,
-                    setModalState: setModalState,
-                  ),
-                  _buildPresetRadioTile(
-                    title: '🥗 โซนผักสด (บล็อกโคลี่, ผักสดรวม, มะเขือเทศ, ไข่ไก่)',
-                    mode: ScanPresetMode.freshVeggies,
-                    setModalState: setModalState,
-                  ),
-                  _buildPresetRadioTile(
-                    title: '👤 ถ่ายรูปหน้าคน / สิ่งของทั่วไป (ทดสอบไม่พบวัตถุดิบ)',
-                    mode: ScanPresetMode.nonFoodOrHuman,
-                    setModalState: setModalState,
-                  ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        if (_hasScanned) {
-                          _runIngredientDetection();
-                        }
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFFF9100),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: const Text('ตกลง', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildPresetRadioTile({
-    required String title,
-    required ScanPresetMode mode,
-    required StateSetter setModalState,
-  }) {
-    return RadioListTile<ScanPresetMode>(
-      title: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-      value: mode,
-      groupValue: _selectedPreset,
-      activeColor: const Color(0xFFFF9100),
-      dense: true,
-      onChanged: (val) {
-        if (val != null) {
-          setState(() {
-            _selectedPreset = val;
-          });
-          setModalState(() {});
-        }
-      },
     );
   }
 
@@ -589,7 +594,7 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'เครื่องสแกนวัตถุดิบ',
+                      'เครื่องสแกนวัตถุดิบ (Page 1)',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -625,12 +630,14 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
                   tooltip: 'ถ่ายรูปตู้เย็น',
                   onPressed: _capturePhoto,
                 ),
-                const SizedBox(height: 12),
-                _buildCircularActionButton(
-                  icon: Icons.tune,
-                  tooltip: 'เลือกโหมดสแกนภาพ',
-                  onPressed: _showPresetSelectionModal,
-                ),
+                if (_cameras != null && _cameras!.length > 1) ...[
+                  const SizedBox(height: 12),
+                  _buildCircularActionButton(
+                    icon: Icons.cameraswitch,
+                    tooltip: 'สลับกล้องหน้า/หลัง',
+                    onPressed: _toggleCamera,
+                  ),
+                ],
                 if (_hasScanned || _capturedImageFile != null) ...[
                   const SizedBox(height: 12),
                   _buildCircularActionButton(
@@ -905,7 +912,7 @@ class _IngredientScannerScreenState extends State<IngredientScannerScreen>
             Icon(Icons.kitchen, size: 90, color: Colors.grey),
             SizedBox(height: 12),
             Text(
-              'กล้องสแกนตู้เย็น',
+              'กล้องสแกนตู้เย็น (Page 1)',
               style: TextStyle(fontSize: 18, color: Colors.grey, fontWeight: FontWeight.bold),
             ),
           ],

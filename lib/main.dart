@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'screens/ingredient_scanner_screen.dart';
+import 'page1/page1_scanner_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Transparent status bar for full-screen camera experience
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -25,12 +24,11 @@ class KinRaiDeeApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFFF9100), // Vibrant Orange
+          seedColor: const Color(0xFFFF9100),
           primary: const Color(0xFFFF9100),
         ),
-        fontFamily: 'Roboto', // Fallback
       ),
-      home: const IngredientScannerScreen(),
+      home: const Page1ScannerScreen(),
     );
   }
 }
